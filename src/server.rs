@@ -1,9 +1,7 @@
-mod proto;
 mod crypto;
 
 use p384::elliptic_curve::rand_core::OsRng;
 use p384::SecretKey;
-use proto::{Key, MessageHandler};
 use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info};
