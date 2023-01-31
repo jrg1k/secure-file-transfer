@@ -1,0 +1,30 @@
+[package]
+name = "secure-file-transfer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[dependencies]
+aead = "0"
+anyhow = "1"
+bincode = "1"
+bytes = "1"
+chacha20poly1305 = "0"
+p384 = { version = "0", features = ["serde", "ecdsa"] }
+rand = "0"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0", features = ["codec"] }
+tower = { version = "0", features = ["util", "make"] }
+tracing = { version = "0" }
+tracing-subscriber = { version = "0", features = ["json", "ansi", "env-filter", "std"] }
+uuid = { version = "1", features = ["v4", "fast-rng", "serde"] }
