@@ -40,21 +40,6 @@ impl Frame {
     }
 }
 
-pub struct Key {
-    secret_key: SecretKey,
-    pub public_key: PublicKey,
-}
-
-impl Key {
-    pub fn new(secret_key: SecretKey) -> Self {
-        let public_key = secret_key.public_key();
-        Self {
-            secret_key,
-            public_key,
-        }
-    }
-}
-
 pub struct MessageHandler {
     key: Arc<Key>,
     buffer: [u8; BUFFER_SIZE],
@@ -112,7 +97,9 @@ impl MessageHandler {
 
     pub fn response(&mut self, request: Frame) -> anyhow::Result<Frame> {
         match request {
-            Frame::Handshake(pubkey, signature, random) => self.handshake(pubkey, signature, random),
+            Frame::Handshake(pubkey, signature, random) => {
+                self.handshake(pubkey, signature, random)
+            }
             Frame::Error(errmsg) => {
                 debug!("{}", errmsg);
                 Err(anyhow!("error: {}", errmsg))

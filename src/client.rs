@@ -1,22 +1,25 @@
-mod proto;
+mod crypto;
 
-use std::sync::Arc;
-
-use p384::{elliptic_curve::rand_core::OsRng, SecretKey};
-use proto::{Key, MessageHandler};
+use p384::SecretKey;
+use rand::thread_rng;
+use secure_file_transfer::{Client, Key};
 use tokio::net::TcpStream;
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let stream = TcpStream::connect("127.0.0.1:8080").await?;
-    let key = Key::new(SecretKey::random(OsRng));
-    let mut handler = MessageHandler::new(Arc::new(key), stream);
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
 
-    let handshake = handler.generate_handshake();
-    handler.send(handshake).await?;
-    let n = handler.read().await?;
-    let request = handler.parse(n)?;
-    dbg!(request);
+    let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    let key = Key::new(SecretKey::random(thread_rng()));
+    let mut client = Client::new(stream, &key).await?;
+    let resp = client.message(b"hello from client".to_vec()).await?;
+    dbg!(std::str::from_utf8(&resp).unwrap());
+    let resp = client.message(b"hello from client 2".to_vec()).await?;
+    dbg!(std::str::from_utf8(&resp).unwrap());
 
     Ok(())
 }

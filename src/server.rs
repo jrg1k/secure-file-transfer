@@ -1,21 +1,22 @@
 mod crypto;
 
-use p384::elliptic_curve::rand_core::OsRng;
 use p384::SecretKey;
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use rand::thread_rng;
+use secure_file_transfer::{Key, Server};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(EnvFilter::from_default_env())
         .with_target(false)
         .init();
 
-    Server::bind(&"127.0.0.1:8080".parse().unwrap())
+    ServerState::bind(&"127.0.0.1:8080".parse().unwrap())
         .await?
         .serve()
         .await;
@@ -23,16 +24,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-struct Server {
+struct ServerState {
     listener: TcpListener,
     key: Arc<Key>,
 }
 
-impl Server {
+impl ServerState {
     async fn bind(addr: &SocketAddr) -> tokio::io::Result<Self> {
         let listener = TcpListener::bind(&addr).await?;
 
-        let secret_key = SecretKey::random(OsRng);
+        let secret_key = SecretKey::random(thread_rng());
         let key = Arc::new(Key::new(secret_key));
 
         info!("server listening on {}", addr);
@@ -55,17 +56,13 @@ impl Server {
                 if let Err(e) = handle_client(stream, key).await {
                     debug!("client {}", e)
                 }
+                debug!("dropping connection from {}", addr);
             });
         }
     }
 }
 
 async fn handle_client(stream: TcpStream, key: Arc<Key>) -> anyhow::Result<()> {
-    let mut handler = MessageHandler::new(key, stream);
-    loop {
-        let n = handler.read().await?;
-        let request = handler.parse(n)?;
-        let response = handler.response(request)?;
-        handler.send(response).await?;
-    }
+    Server::new(stream, &key).await?.serve().await?;
+    Ok(())
 }
