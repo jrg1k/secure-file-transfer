@@ -2,7 +2,7 @@ pub mod crypto;
 
 pub use crypto::Key;
 
-use crypto::{CryptoCodec, CryptoError, CryptoFrame};
+use crypto::{CryptoCodec, CryptoError};
 use futures_util::never::Never;
 use std::{
     future::{poll_fn, ready, Ready},
@@ -10,7 +10,6 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::net::TcpStream;
-use tokio_tower::pipeline;
 use tower::Service;
 use tracing::debug;
 
@@ -30,28 +29,6 @@ impl Client {
     pub async fn message(&mut self, msg: Vec<u8>) -> Result<Vec<u8>, CryptoError<TcpStream>> {
         poll_fn(|cx| self.svc.poll_ready(cx)).await?;
         self.svc.call(msg).await
-    }
-}
-
-pub struct Server {
-    svc: pipeline::Server<CryptoFrame<TcpStream>, ServerSvc>,
-}
-
-impl Server {
-    pub async fn new(stream: TcpStream, key: &Key) -> io::Result<Self> {
-        let stream = CryptoCodec::server(key, stream).await?;
-        Ok(Self {
-            svc: pipeline::Server::new(stream, ServerSvc),
-        })
-    }
-
-    pub async fn serve(
-        self,
-    ) -> Result<
-        (),
-        pipeline::server::Error<tokio_util::codec::Framed<TcpStream, CryptoCodec>, ServerSvc>,
-    > {
-        self.svc.await
     }
 }
 

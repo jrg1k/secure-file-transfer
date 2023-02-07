@@ -1,5 +1,3 @@
-mod crypto;
-
 use p384::SecretKey;
 use rand::thread_rng;
 use secure_file_transfer::{Client, Key};
@@ -10,7 +8,6 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
-        .with_target(false)
         .init();
 
     let stream = TcpStream::connect("127.0.0.1:8080").await?;

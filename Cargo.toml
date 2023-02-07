@@ -3,14 +3,6 @@ name = "secure-file-transfer"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "server"
-path = "src/server.rs"
-
-[[bin]]
-name = "client"
-path = "src/client.rs"
-
 [dependencies]
 anyhow = { version = "1.0" }
 async-bincode = { version = "0.7" }
