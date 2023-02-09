@@ -19,7 +19,7 @@ pub struct Client {
 
 impl Client {
     pub async fn new(stream: TcpStream, key: &Key) -> io::Result<Self> {
-        let stream = CryptoCodec::client(key, stream).await?;
+        let stream = CryptoCodec::new(key, stream).await.unwrap();
 
         Ok(Client {
             svc: crypto::ClientService::new(stream),

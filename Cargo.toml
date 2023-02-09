@@ -22,3 +22,5 @@ tower = { version = "0", features = ["util", "make"] }
 tracing = { version = "0" }
 tracing-subscriber = { version = "0", features = ["json", "ansi", "env-filter", "std"] }
 uuid = { version = "1", features = ["v4", "fast-rng", "serde"] }
+pin-project = { version = "1.0" }
+postcard = { version = "1.0" }

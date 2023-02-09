@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_client(addr: String, stream: TcpStream, key: Arc<Key>) -> anyhow::Result<()> {
     debug!("handling connection from {}", addr);
 
-    let stream = CryptoCodec::server(&key, stream).await?;
+    let stream = CryptoCodec::new(&key, stream).await?;
     pipeline::Server::new(stream, ServerSvc).await?;
 
     debug!("dropping connection from {}", addr);
