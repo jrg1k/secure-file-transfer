@@ -11,19 +11,21 @@ use p384::{
     },
     PublicKey, SecretKey,
 };
+use pin_project::pin_project;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-use std::{io, mem::size_of};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio_tower::pipeline::Client;
-use tokio_util::codec::{Decoder, Encoder, Framed};
+use std::{io, mem::size_of, pin::Pin, task::Poll};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
+};
+
+use tokio_util::{
+    io::{poll_read_buf, poll_write_buf},
+};
 use tracing::log::trace;
 
 type Result<T> = std::result::Result<T, Error>;
-
-pub type CryptoFrame<T> = Framed<T, CryptoCodec>;
-pub type CryptoError<T> = tokio_tower::Error<CryptoFrame<T>, Vec<u8>>;
-pub type ClientService<T> = Client<CryptoFrame<T>, CryptoError<T>, Vec<u8>>;
 
 const LENGTH_SIZE: usize = size_of::<u32>();
 const NONCE_SIZE: usize = size_of::<XNonce>();
@@ -130,15 +132,17 @@ fn compute_cipher(
     Ok(XChaCha20Poly1305::new(symmetric_key))
 }
 
-pub struct CryptoCodec {
+#[pin_project]
+pub struct CryptoStream {
+    #[pin]
+    io: TcpStream,
+    readbuf: BytesMut,
+    writebuf: BytesMut,
     cipher: XChaCha20Poly1305,
 }
 
-impl CryptoCodec {
-    pub async fn new<T>(key: &Key, mut io: T) -> Result<Framed<T, Self>>
-    where
-        T: AsyncRead + AsyncWrite + Sized + Unpin,
-    {
+impl CryptoStream {
+    pub async fn new(key: &Key, mut io: TcpStream) -> Result<Self> {
         trace!("performing handshake");
 
         let mut buf = BytesMut::with_capacity(1024);
@@ -164,21 +168,35 @@ impl CryptoCodec {
 
         trace!("handshake complete");
 
-        Ok(Self { cipher }.framed(io))
+        Ok(Self {
+            io,
+            readbuf: BytesMut::with_capacity(4096),
+            writebuf: BytesMut::with_capacity(4096),
+            cipher,
+        })
     }
 }
 
-impl Decoder for CryptoCodec {
-    type Item = Vec<u8>;
-    type Error = Error;
+impl AsyncRead for CryptoStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        let this = self.project();
 
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
-        if src.len() <= HEADER_SIZE {
-            return Ok(None);
+        match poll_read_buf(this.io, cx, this.readbuf) {
+            Poll::Ready(Ok(_)) => (),
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         }
 
-        let mut length = [0; LENGTH_SIZE];
-        length.copy_from_slice(&src[..LENGTH_SIZE]);
+        if this.readbuf.len() <= HEADER_SIZE {
+            return Poll::Pending;
+        }
+
+        let mut length = [0u8; 4];
+        length.copy_from_slice(&this.readbuf[..4]);
         let length = u32::from_le_bytes(length);
 
         if length as usize > MSG_MAX_SIZE {
@@ -188,51 +206,90 @@ impl Decoder for CryptoCodec {
             ))?;
         }
 
-        if src.len() < HEADER_SIZE + length as usize {
-            return Ok(None);
+        if this.readbuf.len() < HEADER_SIZE + length as usize {
+            return Poll::Pending;
         }
 
-        let nonce = XNonce::clone_from_slice(&src[LENGTH_SIZE..NONCE_SIZE + LENGTH_SIZE]);
+        let nonce = XNonce::clone_from_slice(&this.readbuf[4..NONCE_SIZE + 4]);
 
-        src.advance(HEADER_SIZE);
-
-        let plaintext: Vec<u8> = self
+        let plaintext: Vec<u8> = this
             .cipher
-            .decrypt(&nonce, &src[..length as usize])
+            .decrypt(
+                &nonce,
+                &this.readbuf[HEADER_SIZE..HEADER_SIZE + length as usize],
+            )
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e}")))?;
 
-        src.advance(length as usize);
+        this.readbuf.advance(length as usize + HEADER_SIZE);
 
-        Ok(Some(plaintext))
+        buf.put_slice(&plaintext);
+
+        Poll::Ready(Ok(()))
     }
 }
 
-impl Encoder<Vec<u8>> for CryptoCodec {
-    type Error = Error;
+impl AsyncWrite for CryptoStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::result::Result<usize, io::Error>> {
+        let this = self.project();
 
-    fn encode(&mut self, item: Vec<u8>, dst: &mut BytesMut) -> Result<()> {
-        if item.len() > MSG_MAX_SIZE {
+        if buf.len() > MSG_MAX_SIZE {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("frame of length {} is too large.", item.len()),
+                format!("frame of length {} is too large.", buf.len()),
             ))?;
         }
 
         let nonce: XNonce = XChaCha20Poly1305::generate_nonce(thread_rng());
 
-        let ciphertext = self
+        let ciphertext = this
             .cipher
-            .encrypt(&nonce, item.as_ref())
+            .encrypt(&nonce, buf)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{e}")))?;
 
         let length: [u8; 4] = u32::to_le_bytes(ciphertext.len() as u32);
 
-        dst.reserve(HEADER_SIZE + ciphertext.len());
+        this.writebuf.reserve(HEADER_SIZE + ciphertext.len());
 
-        dst.extend_from_slice(&length);
-        dst.extend_from_slice(&nonce);
-        dst.extend_from_slice(&ciphertext);
-        Ok(())
+        this.writebuf.extend_from_slice(&length);
+        this.writebuf.extend_from_slice(&nonce);
+        this.writebuf.extend_from_slice(&ciphertext);
+
+        match poll_write_buf(this.io, cx, this.writebuf) {
+            Poll::Ready(Ok(n)) => n,
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        };
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::result::Result<(), io::Error>> {
+        let this = self.project();
+
+        match poll_write_buf(this.io, cx, this.writebuf) {
+            Poll::Ready(Ok(_)) => (),
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        }
+
+        if this.writebuf.has_remaining() {
+            return Poll::Pending;
+        }
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::result::Result<(), io::Error>> {
+        self.project().io.poll_shutdown(cx)
     }
 }
 

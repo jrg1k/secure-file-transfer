@@ -1,36 +1,14 @@
 pub mod crypto;
 
 pub use crypto::Key;
-
-use crypto::{CryptoCodec, CryptoError};
 use futures_util::never::Never;
 use std::{
-    future::{poll_fn, ready, Ready},
-    io,
+    future::{ready, Ready},
     task::{Context, Poll},
 };
-use tokio::net::TcpStream;
+
 use tower::Service;
 use tracing::debug;
-
-pub struct Client {
-    svc: crypto::ClientService<TcpStream>,
-}
-
-impl Client {
-    pub async fn new(stream: TcpStream, key: &Key) -> io::Result<Self> {
-        let stream = CryptoCodec::new(key, stream).await.unwrap();
-
-        Ok(Client {
-            svc: crypto::ClientService::new(stream),
-        })
-    }
-
-    pub async fn message(&mut self, msg: Vec<u8>) -> Result<Vec<u8>, CryptoError<TcpStream>> {
-        poll_fn(|cx| self.svc.poll_ready(cx)).await?;
-        self.svc.call(msg).await
-    }
-}
 
 pub struct ServerSvc;
 

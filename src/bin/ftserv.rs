@@ -1,9 +1,12 @@
 use p384::SecretKey;
 use rand::thread_rng;
-use secure_file_transfer::{crypto::CryptoCodec, Key, ServerSvc};
+use secure_file_transfer::{crypto::CryptoStream, Key};
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tower::pipeline;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
+
 use tracing::{debug, error};
 use tracing_subscriber::EnvFilter;
 
@@ -39,9 +42,18 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_client(addr: String, stream: TcpStream, key: Arc<Key>) -> anyhow::Result<()> {
     debug!("handling connection from {}", addr);
 
-    let stream = CryptoCodec::new(&key, stream).await?;
-    pipeline::Server::new(stream, ServerSvc).await?;
+    let mut stream = CryptoStream::new(&key, stream).await?;
+    // pipeline::Server::new(stream, ServerSvc).await?;
 
-    debug!("dropping connection from {}", addr);
-    Ok(())
+    let mut buf = [0; 1024];
+
+    loop {
+        let n = stream.read(&mut buf).await?;
+
+        let msg = std::str::from_utf8(&buf[..n])?;
+
+        println!("{msg}");
+
+        stream.write_all(&buf[..]).await?;
+    }
 }
