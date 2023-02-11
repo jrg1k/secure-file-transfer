@@ -19,13 +19,8 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
 };
-
-use tokio_util::{
-    io::{poll_read_buf, poll_write_buf},
-};
-use tracing::log::trace;
-
-type Result<T> = std::result::Result<T, Error>;
+use tokio_util::io::{poll_read_buf, poll_write_buf};
+use tracing::trace;
 
 const LENGTH_SIZE: usize = size_of::<u32>();
 const NONCE_SIZE: usize = size_of::<XNonce>();
@@ -57,7 +52,7 @@ struct Handshake {
 
 impl Handshake {
     /// Generate a new handshake.
-    fn new(key: &Key, ephemeral_pubkey: PublicKey) -> Result<Self> {
+    fn new(key: &Key, ephemeral_pubkey: PublicKey) -> Result<Self, Error> {
         let signing_key = SigningKey::from(&key.secret_key);
         let mut sign_data = [0u8; 1024];
         let sign_data = postcard::to_slice(&ephemeral_pubkey, &mut sign_data).map_err(|e| {
@@ -66,6 +61,7 @@ impl Handshake {
                 source: e,
             }
         })?;
+
         let signature: Signature = signing_key.sign(sign_data);
 
         let hs = Self {
@@ -78,7 +74,7 @@ impl Handshake {
     }
 
     /// Insert a serialized handshake into a buffer.
-    fn insert_buf(&self, buf: &mut BytesMut) -> Result<()> {
+    fn insert_buf(&self, buf: &mut BytesMut) -> Result<(), Error> {
         let mut serialized_buf = [0u8; 1024];
         let handshake =
             postcard::to_slice(self, &mut serialized_buf).map_err(|e| Error::InvalidHandshake {
@@ -96,6 +92,9 @@ impl Handshake {
 impl TryFrom<&[u8]> for Handshake {
     type Error = Error;
 
+    /// Attempt to convert some bytes to a structured handshake
+    ///
+    /// The sender is authenticated using the signature.
     fn try_from(value: &[u8]) -> std::result::Result<Self, Self::Error> {
         let handshake: Self = postcard::from_bytes(value).map_err(|e| Error::InvalidHandshake {
             reason: "deserializing handshake failed",
@@ -121,7 +120,7 @@ impl TryFrom<&[u8]> for Handshake {
 fn compute_cipher(
     eph_key: EphemeralSecret,
     peer_eph_pubkey: PublicKey,
-) -> Result<XChaCha20Poly1305> {
+) -> Result<XChaCha20Poly1305, Error> {
     let shared_secret = eph_key.diffie_hellman(&peer_eph_pubkey);
     let kdf = shared_secret.extract::<blake3::Hasher>(None);
 
@@ -142,7 +141,7 @@ pub struct CryptoStream {
 }
 
 impl CryptoStream {
-    pub async fn new(key: &Key, mut io: TcpStream) -> Result<Self> {
+    pub async fn new(key: &Key, mut io: TcpStream) -> Result<Self, Error> {
         trace!("performing handshake");
 
         let mut buf = BytesMut::with_capacity(1024);
@@ -183,13 +182,16 @@ impl AsyncRead for CryptoStream {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
-        let this = self.project();
+        trace!("begin read");
 
+        let this = self.project();
         match poll_read_buf(this.io, cx, this.readbuf) {
             Poll::Ready(Ok(_)) => (),
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         }
+
+        trace!("obtained {} bytes from stream", this.readbuf.len());
 
         if this.readbuf.len() <= HEADER_SIZE {
             return Poll::Pending;
@@ -222,6 +224,8 @@ impl AsyncRead for CryptoStream {
 
         this.readbuf.advance(length as usize + HEADER_SIZE);
 
+        trace!("decrypted {} bytes", plaintext.len());
+
         buf.put_slice(&plaintext);
 
         Poll::Ready(Ok(()))
@@ -243,6 +247,8 @@ impl AsyncWrite for CryptoStream {
             ))?;
         }
 
+        trace!("encrypting {} bytes", buf.len());
+
         let nonce: XNonce = XChaCha20Poly1305::generate_nonce(thread_rng());
 
         let ciphertext = this
@@ -258,6 +264,11 @@ impl AsyncWrite for CryptoStream {
         this.writebuf.extend_from_slice(&nonce);
         this.writebuf.extend_from_slice(&ciphertext);
 
+        trace!(
+            "attempting to flush buffer of {} bytes",
+            this.writebuf.len()
+        );
+
         match poll_write_buf(this.io, cx, this.writebuf) {
             Poll::Ready(Ok(n)) => n,
             Poll::Pending => return Poll::Pending,
@@ -271,6 +282,8 @@ impl AsyncWrite for CryptoStream {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<std::result::Result<(), io::Error>> {
         let this = self.project();
+
+        trace!("flushing buffer of {} bytes", this.writebuf.len());
 
         match poll_write_buf(this.io, cx, this.writebuf) {
             Poll::Ready(Ok(_)) => (),
