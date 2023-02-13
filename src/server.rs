@@ -13,8 +13,16 @@ use tokio_util::codec::Decoder;
 use tower::Service;
 use tracing::debug;
 
-pub async fn serve(key: &Key, io: TcpStream) -> anyhow::Result<()> {
-    let stream = crypto::CryptoStream::new(key, io).await?;
+/// serve the client over a plaintext transport
+pub async fn serve_plain(stream: TcpStream) -> anyhow::Result<()> {
+    let transport = proto::Codec.framed(stream);
+    pipeline::Server::new(transport, ServerSvc).await.unwrap();
+    Ok(())
+}
+
+/// serve the client over an encrypted transport
+pub async fn serve_encrypted(key: &Key, stream: TcpStream) -> anyhow::Result<()> {
+    let stream = crypto::CryptoStream::new(key, stream).await?;
     let transport = proto::Codec.framed(stream);
     pipeline::Server::new(transport, ServerSvc).await.unwrap();
     Ok(())

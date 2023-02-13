@@ -15,7 +15,7 @@ async fn main() -> anyhow::Result<()> {
     let stream = TcpStream::connect("127.0.0.1:8080").await?;
     let key = Key::new(SecretKey::random(thread_rng()));
 
-    let mut client = Client::new(&key, stream).await?;
+    let mut client = Client::encrypted(&key, stream).await?;
 
     client
         .request(Msg::RequestFile {

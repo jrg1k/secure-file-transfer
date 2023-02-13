@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_client(addr: String, stream: TcpStream, key: Arc<Key>) -> anyhow::Result<()> {
     debug!("handling connection from {}", addr);
 
-    secure_file_transfer::server::serve(&key, stream).await?;
+    secure_file_transfer::server::serve_encrypted(&key, stream).await?;
 
     Ok(())
 }

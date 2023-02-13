@@ -1,30 +1,52 @@
 use crate::{
-    crypto::{self, CryptoStream},
+    crypto::{self, CryptoStream, Key},
     proto::{self, Msg},
 };
 use std::future::poll_fn;
-use tokio::net::TcpStream;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::TcpStream,
+};
 use tokio_tower::pipeline;
 use tokio_util::codec::Decoder;
 use tower::Service;
 
-type Transport = proto::Transport<CryptoStream>;
-type ClientError = tokio_tower::Error<Transport, Msg>;
-pub type ClientSvc = pipeline::Client<Transport, ClientError, Msg>;
+type Transport<T> = proto::Transport<T>;
+type ClientError<T> = tokio_tower::Error<Transport<T>, Msg>;
+pub type ClientSvc<T> = pipeline::Client<Transport<T>, ClientError<T>, Msg>;
 
-pub struct Client {
-    svc: ClientSvc,
+pub struct Client<T>
+where
+    T: AsyncRead + AsyncWrite,
+{
+    svc: ClientSvc<T>,
 }
 
-impl Client {
-    pub async fn new(key: &crypto::Key, io: TcpStream) -> anyhow::Result<Self> {
-        let stream = crypto::CryptoStream::new(key, io).await?;
+impl Client<TcpStream> {
+    /// connect to a server over a plaintext transport
+    pub async fn plain(stream: TcpStream) -> anyhow::Result<Self> {
         let transport = proto::Codec.framed(stream);
-        let svc: ClientSvc = pipeline::Client::new(transport);
+        let svc: ClientSvc<TcpStream> = pipeline::Client::new(transport);
 
         Ok(Self { svc })
     }
+}
 
+impl Client<CryptoStream> {
+    /// connect to a server over an encrypted transport
+    pub async fn encrypted(key: &Key, stream: TcpStream) -> anyhow::Result<Self> {
+        let stream = crypto::CryptoStream::new(key, stream).await?;
+        let transport: Transport<CryptoStream> = proto::Codec.framed(stream);
+        let svc: ClientSvc<CryptoStream> = pipeline::Client::new(transport);
+
+        Ok(Client { svc })
+    }
+}
+
+impl<T> Client<T>
+where
+    for<'a> T: AsyncRead + AsyncWrite + 'a,
+{
     pub async fn request(&mut self, msg: Msg) -> anyhow::Result<()> {
         poll_fn(|cx| self.svc.poll_ready(cx)).await?;
         self.svc.call(msg).await?;
