@@ -1,5 +1,5 @@
 use crate::{
-    crypto::{self, Key},
+    crypto::{self, AsymKey},
     proto::{self, Msg},
 };
 use std::{
@@ -21,7 +21,7 @@ pub async fn serve_plain(stream: TcpStream) -> anyhow::Result<()> {
 }
 
 /// serve the client over an encrypted transport
-pub async fn serve_encrypted(key: &Key, stream: TcpStream) -> anyhow::Result<()> {
+pub async fn serve_encrypted(key: &AsymKey, stream: TcpStream) -> anyhow::Result<()> {
     let stream = crypto::CryptoStream::new(key, stream).await?;
     let transport = proto::Codec.framed(stream);
     pipeline::Server::new(transport, ServerSvc).await.unwrap();

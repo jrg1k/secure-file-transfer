@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use p384::SecretKey;
 use rand::thread_rng;
-use secure_file_transfer::{client::Client, crypto::Key, proto::Msg};
+use secure_file_transfer::{client::Client, crypto::AsymKey, proto::Msg};
 use tokio::net::TcpStream;
 use tracing_subscriber::EnvFilter;
 
@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let stream = TcpStream::connect("127.0.0.1:8080").await?;
-    let key = Key::new(SecretKey::random(thread_rng()));
+    let key = AsymKey::new(SecretKey::random(thread_rng()));
 
     let mut client = Client::encrypted(&key, stream).await?;
 

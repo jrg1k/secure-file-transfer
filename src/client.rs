@@ -1,5 +1,5 @@
 use crate::{
-    crypto::{self, CryptoStream, Key},
+    crypto::{self, AsymKey, CryptoStream},
     proto::{self, Msg},
 };
 use std::future::poll_fn;
@@ -34,7 +34,7 @@ impl Client<TcpStream> {
 
 impl Client<CryptoStream> {
     /// connect to a server over an encrypted transport
-    pub async fn encrypted(key: &Key, stream: TcpStream) -> anyhow::Result<Self> {
+    pub async fn encrypted(key: &AsymKey, stream: TcpStream) -> anyhow::Result<Self> {
         let stream = crypto::CryptoStream::new(key, stream).await?;
         let transport: Transport<CryptoStream> = proto::Codec.framed(stream);
         let svc: ClientSvc<CryptoStream> = pipeline::Client::new(transport);

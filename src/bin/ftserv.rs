@@ -1,6 +1,6 @@
 use p384::SecretKey;
 use rand::thread_rng;
-use secure_file_transfer::crypto::Key;
+use secure_file_transfer::crypto::AsymKey;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let secret_key = SecretKey::random(thread_rng());
-    let key = Arc::new(Key::new(secret_key));
+    let key = Arc::new(AsymKey::new(secret_key));
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
 
     loop {
@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(level = "info", skip_all, fields(addr = addr))]
-async fn handle_client(addr: String, stream: TcpStream, key: Arc<Key>) -> anyhow::Result<()> {
+async fn handle_client(addr: String, stream: TcpStream, key: Arc<AsymKey>) -> anyhow::Result<()> {
     debug!("handling connection from {}", addr);
 
     secure_file_transfer::server::serve_encrypted(&key, stream).await?;
