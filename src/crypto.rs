@@ -25,7 +25,7 @@ use tokio::{
     net::TcpStream,
 };
 use tokio_util::io::{poll_read_buf, poll_write_buf};
-use tracing::trace;
+use tracing::debug;
 
 type Aead = XChaCha20Poly1305;
 type Stream = StreamLE31<Aead>;
@@ -34,6 +34,7 @@ type Encryptor = EncryptorLE31<XChaCha20Poly1305>;
 type Decryptor = DecryptorLE31<XChaCha20Poly1305>;
 
 const MSG_MAX_SIZE: usize = 8192;
+const TAG_SIZE: usize = 16;
 
 pub struct AsymKey {
     secret_key: SecretKey,
@@ -164,7 +165,7 @@ pub struct CryptoStream {
 
 impl CryptoStream {
     pub async fn new(key: &AsymKey, mut io: TcpStream) -> Result<Self, Error> {
-        trace!("performing handshake");
+        debug!("performing handshake");
 
         let mut buf = BytesMut::with_capacity(1024);
 
@@ -190,7 +191,7 @@ impl CryptoStream {
 
         let (encryptor, decryptor) = compute_cipher(ephemeral_key, peer_handshake, nonce)?;
 
-        trace!("handshake complete");
+        debug!("handshake complete");
 
         Ok(Self {
             io,
@@ -210,19 +211,11 @@ impl AsyncRead for CryptoStream {
     ) -> Poll<io::Result<()>> {
         let this = self.project();
 
-        match this.io.poll_read_ready(cx) {
-            Poll::Ready(Ok(_)) => (),
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        }
-
         match poll_read_buf(Pin::new(this.io), cx, this.readbuf) {
             Poll::Ready(Ok(_)) => (),
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         }
-
-        trace!("read: obtained {} bytes from stream", this.readbuf.len());
 
         if this.readbuf.remaining() <= 4 {
             return Poll::Pending;
@@ -230,34 +223,32 @@ impl AsyncRead for CryptoStream {
 
         let mut length_buf = [0u8; 4];
         length_buf.copy_from_slice(&this.readbuf[..4]);
-        let length = u32::from_le_bytes(length_buf);
+        let length = u32::from_le_bytes(length_buf) as usize;
 
-        if length as usize > MSG_MAX_SIZE {
+        if length > MSG_MAX_SIZE {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("frame of length {length} is too large."),
             ))?;
         }
 
-        if this.readbuf.len() < 4 + length as usize {
+        if this.readbuf.len() < 4 + length {
             return Poll::Pending;
         }
+
+        debug!("decrypting {} bytes from stream", length);
 
         let plaintext = this
             .decryptor
             .decrypt_next(Payload {
-                msg: &this.readbuf[4..4 + length as usize],
+                msg: &this.readbuf[4..4 + length],
                 aad: &length_buf,
             })
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
 
         buf.put_slice(&plaintext);
 
-        trace!("read: decrypted {} bytes", this.readbuf.remaining());
-
-        this.readbuf.advance(4 + length as usize);
-
-        debug_assert!(!this.readbuf.has_remaining());
+        this.readbuf.advance(4 + length);
 
         Poll::Ready(Ok(()))
     }
@@ -271,12 +262,6 @@ impl AsyncWrite for CryptoStream {
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.project();
 
-        match this.io.poll_write_ready(cx) {
-            Poll::Ready(Ok(_)) => (),
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-        }
-
         if buf.len() > MSG_MAX_SIZE {
             Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -284,28 +269,49 @@ impl AsyncWrite for CryptoStream {
             ))?;
         }
 
-        trace!("encrypting {} bytes", buf.len());
+        match this.io.poll_write_ready(cx) {
+            Poll::Ready(Ok(_)) => (),
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        }
 
-        let length: [u8; 4] = u32::to_le_bytes((buf.len() + 16) as u32);
+        debug!("encrypting {} bytes", buf.len());
+
+        let length = buf.len() + TAG_SIZE;
+        let length_buf: [u8; 4] = u32::to_le_bytes(length as u32);
 
         let ciphertext = this
             .encryptor
             .encrypt_next(Payload {
-                aad: &length,
+                aad: &length_buf,
                 msg: buf,
             })
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
 
-        debug_assert_eq!(ciphertext.len(), buf.len() + 16);
+        debug_assert_eq!(ciphertext.len(), length);
 
-        this.writebuf.reserve(4 + buf.len() + 16);
-        this.writebuf.extend_from_slice(&length);
+        this.writebuf.reserve(4 + length);
+        this.writebuf.extend_from_slice(&length_buf);
         this.writebuf.extend_from_slice(&ciphertext);
 
-        trace!(
-            "attempting to flush buffer of {} bytes",
-            this.writebuf.remaining()
-        );
+        match poll_write_buf(Pin::new(this.io), cx, this.writebuf) {
+            Poll::Ready(Ok(n)) => n,
+            Poll::Pending => {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "expected stream to be writable",
+                )));
+            }
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+        };
+
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        let this = self.project();
+
+        debug!("flushing buffer of {} bytes", this.writebuf.len());
 
         while this.writebuf.has_remaining() {
             match poll_write_buf(Pin::new(this.io), cx, this.writebuf) {
@@ -313,19 +319,6 @@ impl AsyncWrite for CryptoStream {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             };
-        }
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        let this = self.project();
-
-        trace!("flushing buffer of {} bytes", this.writebuf.len());
-
-        match poll_write_buf(Pin::new(this.io), cx, this.writebuf) {
-            Poll::Ready(Ok(_)) => (),
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         }
 
         if this.writebuf.has_remaining() {

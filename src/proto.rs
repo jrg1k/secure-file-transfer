@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf};
 use tokio_util::codec::{Decoder, Encoder, Framed};
-use tracing::trace;
+use tracing::debug;
 
 pub type Transport<T> = Framed<T, Codec>;
 
@@ -13,27 +13,23 @@ impl Decoder for Codec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        trace!("decode: {} bytes in buffer", src.len());
         if src.len() <= 4 {
             return Ok(None);
         }
 
-        let mut length = [0; 4];
-        length.copy_from_slice(&src[..4]);
-        let length = u32::from_le_bytes(length);
+        let mut length_buf = [0; 4];
+        length_buf.copy_from_slice(&src[..4]);
+        let length = u32::from_le_bytes(length_buf) as usize;
 
-        if src.len() < 4 + length as usize {
+        if src.len() < 4 + length {
             return Ok(None);
         }
 
-        let msg: Msg = postcard::from_bytes(&src[4..]).map_err(|e| Error::SerializeFailure {
-            reason: "deserialization failed",
-            source: e,
-        })?;
+        debug!("decoding {} bytes ", length);
 
-        src.advance(4 + length as usize);
+        let msg: Msg = postcard::from_bytes(&src[4..]).map_err(Error::DeserializeFilure)?;
 
-        trace!("decode: Msg::{:?}", msg);
+        src.advance(4 + length);
 
         Ok(Some(msg))
     }
@@ -43,21 +39,15 @@ impl Encoder<Msg> for Codec {
     type Error = Error;
 
     fn encode(&mut self, item: Msg, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        trace!("encode: Msg::{:?}", item);
         let mut buf = [0u8; 1024];
 
-        let n = postcard::to_slice(&item, &mut buf)
-            .map_err(|e| Error::SerializeFailure {
-                reason: "serialization failed",
-                source: e,
-            })?
-            .len();
+        let msg = postcard::to_slice(&item, &mut buf).map_err(Error::SerializeFailure)?;
 
-        dst.reserve(4 + n);
-        dst.put_u32_le(n as u32);
-        dst.extend_from_slice(&buf[..n]);
+        dst.reserve(4 + msg.len());
+        dst.put_u32_le(msg.len() as u32);
+        dst.extend_from_slice(msg);
 
-        trace!("encode: {} bytes added to buffer", n);
+        debug!("encoded {} bytes", msg.len());
 
         Ok(())
     }
@@ -71,10 +61,8 @@ pub enum Msg {
 /// Error used for the crypto module.
 #[derive(Debug)]
 pub enum Error {
-    SerializeFailure {
-        reason: &'static str,
-        source: postcard::Error,
-    },
+    SerializeFailure(postcard::Error),
+    DeserializeFilure(postcard::Error),
     Io {
         reason: &'static str,
         source: io::Error,
@@ -84,7 +72,8 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SerializeFailure { reason, source } => write!(f, "{reason}: {source}"),
+            Self::SerializeFailure(e) => write!(f, "failed to serialize message: {e}"),
+            Self::DeserializeFilure(e) => write!(f, "failed to deserialize bytes to message: {e}"),
             Self::Io { reason, source } => write!(f, "{reason}: {source}"),
         }
     }
