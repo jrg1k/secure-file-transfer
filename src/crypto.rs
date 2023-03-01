@@ -12,7 +12,7 @@ use p384::{
     },
     PublicKey, SecretKey,
 };
-use pin_project::pin_project;
+use pin_project_lite::pin_project;
 use rand::prelude::*;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
@@ -154,13 +154,14 @@ fn compute_cipher(
     Ok((encryptor, decryptor))
 }
 
-#[pin_project]
-pub struct CryptoStream {
-    io: TcpStream,
-    readbuf: BytesMut,
-    writebuf: BytesMut,
-    encryptor: Encryptor,
-    decryptor: Decryptor,
+pin_project! {
+    pub struct CryptoStream {
+        io: TcpStream,
+        readbuf: BytesMut,
+        writebuf: BytesMut,
+        encryptor: Encryptor,
+        decryptor: Decryptor,
+    }
 }
 
 impl CryptoStream {

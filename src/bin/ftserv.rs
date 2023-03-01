@@ -1,14 +1,13 @@
 use p384::SecretKey;
 use rand::thread_rng;
-use secure_file_transfer::crypto::AsymKey;
+use secure_file_transfer::{crypto::AsymKey, BoxRes};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-
 use tracing::{debug, error};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> BoxRes<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -36,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(level = "info", skip_all, fields(addr = addr))]
-async fn handle_client(addr: String, stream: TcpStream, key: Arc<AsymKey>) -> anyhow::Result<()> {
+async fn handle_client(addr: String, stream: TcpStream, key: Arc<AsymKey>) -> BoxRes<()> {
     debug!("handling connection from {}", addr);
 
     secure_file_transfer::server::serve_encrypted(&key, stream).await?;

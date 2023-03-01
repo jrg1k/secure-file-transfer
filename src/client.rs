@@ -1,6 +1,7 @@
 use crate::{
-    crypto::{self, AsymKey, CryptoStream},
+    crypto::{AsymKey, CryptoStream},
     proto::{self, Msg},
+    BoxRes,
 };
 use std::future::poll_fn;
 use tokio::{
@@ -24,7 +25,7 @@ where
 
 impl Client<TcpStream> {
     /// connect to a server over a plaintext transport
-    pub async fn plain(stream: TcpStream) -> anyhow::Result<Self> {
+    pub async fn plain(stream: TcpStream) -> BoxRes<Self> {
         let transport = proto::Codec.framed(stream);
         let svc: ClientSvc<TcpStream> = pipeline::Client::new(transport);
 
@@ -34,8 +35,8 @@ impl Client<TcpStream> {
 
 impl Client<CryptoStream> {
     /// connect to a server over an encrypted transport
-    pub async fn encrypted(key: &AsymKey, stream: TcpStream) -> anyhow::Result<Self> {
-        let stream = crypto::CryptoStream::new(key, stream).await?;
+    pub async fn encrypted(key: &AsymKey, stream: TcpStream) -> BoxRes<Self> {
+        let stream = CryptoStream::new(key, stream).await?;
         let transport: Transport<CryptoStream> = proto::Codec.framed(stream);
         let svc: ClientSvc<CryptoStream> = pipeline::Client::new(transport);
 
@@ -47,9 +48,8 @@ impl<T> Client<T>
 where
     for<'a> T: AsyncRead + AsyncWrite + 'a,
 {
-    pub async fn request(&mut self, msg: Msg) -> anyhow::Result<()> {
+    pub async fn request(&mut self, msg: Msg) -> BoxRes<Msg> {
         poll_fn(|cx| self.svc.poll_ready(cx)).await?;
-        self.svc.call(msg).await?;
-        Ok(())
+        Ok(self.svc.call(msg).await?)
     }
 }
