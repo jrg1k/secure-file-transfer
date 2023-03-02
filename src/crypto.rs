@@ -221,21 +221,20 @@ impl AsyncRead for CryptoStream {
     ) -> Poll<io::Result<()>> {
         let this = self.project();
 
+        dbg!(this.readbuf.capacity());
         match poll_read_buf(Pin::new(this.io), cx, this.readbuf) {
             Poll::Ready(Ok(_)) => (),
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
         }
 
-        if this.readbuf.remaining() <= 4 {
+        if this.readbuf.len() <= 4 {
             return Poll::Pending;
         }
 
         let mut length_buf = [0u8; 4];
         length_buf.copy_from_slice(&this.readbuf[..4]);
         let length = u32::from_le_bytes(length_buf) as usize;
-
-        this.readbuf.reserve(length + 4);
 
         if length > MSG_MAX_SIZE {
             Err(io::Error::new(
@@ -245,6 +244,7 @@ impl AsyncRead for CryptoStream {
         }
 
         if this.readbuf.len() < 4 + length {
+            this.readbuf.reserve(4 + length - this.readbuf.len());
             return Poll::Pending;
         }
 
@@ -261,6 +261,7 @@ impl AsyncRead for CryptoStream {
         buf.put_slice(&plaintext);
 
         this.readbuf.advance(4 + length);
+        this.readbuf.reserve(4 + length);
 
         Poll::Ready(Ok(()))
     }
@@ -291,8 +292,6 @@ impl AsyncWrite for CryptoStream {
 
         let length = buf.len() + TAG_SIZE;
         let length_buf: [u8; 4] = u32::to_le_bytes(length as u32);
-
-        this.writebuf.reserve(length + 4);
 
         let ciphertext = this
             .encryptor

@@ -101,7 +101,7 @@ impl Service<Msg> for ServerSvc {
                         None => return Ok(Msg::Status(StatusKind::FileError)),
                     };
 
-                    let mut buf = [0u8; 4096];
+                    let mut buf = [0u8; 2048];
                     let n = match file.read(&mut buf).await {
                         Ok(n) => n,
                         Err(_) => return Ok(Msg::Status(StatusKind::FileError)),

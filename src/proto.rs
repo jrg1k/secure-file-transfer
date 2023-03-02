@@ -38,14 +38,17 @@ impl Decoder for Codec {
         let length = u32::from_le_bytes(length_buf) as usize;
 
         if src.len() < 4 + length {
+            src.reserve(4 + length - src.len());
             return Ok(None);
         }
 
         debug!("decoding {} bytes ", length);
 
-        let msg: Msg = postcard::from_bytes(&src[4..]).map_err(Error::DeserializeFilure)?;
+        let msg: Msg =
+            postcard::from_bytes(&src[4..4 + length]).map_err(Error::DeserializeFilure)?;
 
         src.advance(4 + length);
+        src.reserve(4 + length);
 
         Ok(Some(msg))
     }

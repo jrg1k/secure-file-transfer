@@ -104,7 +104,7 @@ where
         _ => Err("sending file failed")?,
     }
 
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 2048];
     loop {
         let n = file.read(&mut buf).await?;
         if n == 0 {
