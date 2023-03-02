@@ -110,7 +110,6 @@ where
         if n == 0 {
             break;
         }
-        dbg!(n);
 
         client
             .request(Msg::FilePart {

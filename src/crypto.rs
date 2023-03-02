@@ -221,7 +221,6 @@ impl AsyncRead for CryptoStream {
     ) -> Poll<io::Result<()>> {
         let this = self.project();
 
-        dbg!(this.readbuf.capacity());
         match poll_read_buf(Pin::new(this.io), cx, this.readbuf) {
             Poll::Ready(Ok(_)) => (),
             Poll::Pending => return Poll::Pending,
