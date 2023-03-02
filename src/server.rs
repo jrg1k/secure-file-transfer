@@ -5,10 +5,10 @@ use crate::{
     proto,
     proto::Msg,
 };
+use std::collections::HashSet;
 use std::{
     fmt::Formatter,
     future::Future,
-    path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -26,8 +26,12 @@ pub async fn serve_plain(stream: TcpStream) -> Result<(), Error> {
 }
 
 /// serve the client over an encrypted transport
-pub async fn serve_encrypted(key: &AsymKey, stream: TcpStream) -> Result<(), Error> {
-    let stream = CryptoStream::new(key, stream).await?;
+pub async fn serve_encrypted(
+    key: &AsymKey,
+    auth: &HashSet<blake3::Hash>,
+    stream: TcpStream,
+) -> Result<(), Error> {
+    let stream = CryptoStream::new(key, auth, stream).await?;
     let transport = proto::Codec.framed(stream);
     pipeline::Server::new(transport, ServerSvc).await?;
     Ok(())
@@ -47,9 +51,7 @@ impl Service<Msg> for ServerSvc {
     fn call(&mut self, req: Msg) -> Self::Future {
         let fut = async move {
             debug!("{req:#?}");
-            Ok(Msg::RequestFile {
-                path: PathBuf::from("/from/server"),
-            })
+            Ok(req)
         };
         Box::pin(fut)
     }

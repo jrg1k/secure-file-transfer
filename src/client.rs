@@ -3,7 +3,7 @@ use crate::{
     proto::{self, Msg},
     BoxRes,
 };
-use std::future::poll_fn;
+use std::{collections::HashSet, future::poll_fn};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
@@ -35,8 +35,12 @@ impl Client<TcpStream> {
 
 impl Client<CryptoStream> {
     /// connect to a server over an encrypted transport
-    pub async fn encrypted(key: &AsymKey, stream: TcpStream) -> BoxRes<Self> {
-        let stream = CryptoStream::new(key, stream).await?;
+    pub async fn encrypted(
+        key: &AsymKey,
+        auth: HashSet<blake3::Hash>,
+        stream: TcpStream,
+    ) -> BoxRes<Self> {
+        let stream = CryptoStream::new(key, &auth, stream).await?;
         let transport: Transport<CryptoStream> = proto::Codec.framed(stream);
         let svc: ClientSvc<CryptoStream> = pipeline::Client::new(transport);
 

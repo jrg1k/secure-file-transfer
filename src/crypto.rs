@@ -4,6 +4,7 @@ use aead::{
 };
 use bytes::{Buf, BufMut, BytesMut};
 use chacha20poly1305::XChaCha20Poly1305;
+use elliptic_curve::sec1::ToEncodedPoint;
 use p384::{
     ecdh::EphemeralSecret,
     ecdsa::{
@@ -16,8 +17,8 @@ use pin_project_lite::pin_project;
 use rand::prelude::*;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-use std::mem::size_of;
 use std::task::Context;
+use std::{collections::HashSet, mem::size_of};
 use std::{io, pin::Pin, task::Poll};
 use tokio::{
     io::AsyncRead,
@@ -61,7 +62,7 @@ struct Kex {
 /// Handshake used to establish encrypted communication.
 #[derive(Serialize, Deserialize)]
 struct Handshake {
-    verifier: VerifyingKey,
+    verifier: PublicKey,
     signature: Signature,
     kex: Kex,
 }
@@ -85,7 +86,7 @@ impl Handshake {
             .expect("serialization buffer should be large enough");
 
         let hs = Self {
-            verifier: VerifyingKey::from(key.public_key),
+            verifier: key.public_key,
             signature: signing_key.sign(sign_data),
             kex,
         };
@@ -122,8 +123,7 @@ impl TryFrom<&[u8]> for Handshake {
         let signed_data = postcard::to_slice(&handshake.kex, &mut sign_buf)
             .expect("serialization buffer should be large enough");
 
-        handshake
-            .verifier
+        VerifyingKey::from(handshake.verifier)
             .verify(signed_data, &handshake.signature)
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
 
@@ -140,7 +140,7 @@ fn compute_cipher(
     let kdf = shared_secret.extract::<blake3::Hasher>(None);
 
     let mut symmetric_key = [0; 32];
-    kdf.expand(&[], &mut symmetric_key)
+    kdf.expand(b"\xDE\xAD\xBE\xFF", &mut symmetric_key)
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionAborted, format!("{e}")))?;
 
     let cipher: Aead = Aead::new_from_slice(&symmetric_key).expect("key should be 32 bytes");
@@ -165,7 +165,11 @@ pin_project! {
 }
 
 impl CryptoStream {
-    pub async fn new(key: &AsymKey, mut io: TcpStream) -> Result<Self, Error> {
+    pub async fn new(
+        key: &AsymKey,
+        auth: &HashSet<blake3::Hash>,
+        mut io: TcpStream,
+    ) -> Result<Self, Error> {
         debug!("performing handshake");
 
         let mut buf = BytesMut::with_capacity(1024);
@@ -189,6 +193,11 @@ impl CryptoStream {
         }
 
         let peer_handshake = Handshake::try_from(&buf[..])?;
+
+        let hash = blake3::hash(peer_handshake.verifier.to_encoded_point(false).as_bytes());
+        if !auth.contains(&hash) {
+            return Err(Error::AuthenticationFailure(hash));
+        }
 
         let (encryptor, decryptor) = compute_cipher(ephemeral_key, peer_handshake, nonce)?;
 
@@ -349,6 +358,7 @@ pub enum Error {
         reason: &'static str,
         source: io::Error,
     },
+    AuthenticationFailure(blake3::Hash),
 }
 
 impl std::fmt::Display for Error {
@@ -357,6 +367,9 @@ impl std::fmt::Display for Error {
             Self::InvalidHandshake { reason, source } => write!(f, "{reason}: {source}"),
             Self::InvalidKey { reason, source } => write!(f, "{reason}: {source}"),
             Self::Io { reason, source } => write!(f, "{reason}: {source}"),
+            Self::AuthenticationFailure(h) => {
+                write!(f, r#"failed to authenticate peer with pubkey hash "{h}""#)
+            }
         }
     }
 }

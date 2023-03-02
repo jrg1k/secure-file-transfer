@@ -1,9 +1,26 @@
 use p384::SecretKey;
-use rand::thread_rng;
+use secure_file_transfer::auth::load_auth;
+use secure_file_transfer::proto::StatusKind;
 use secure_file_transfer::{client::Client, crypto::AsymKey, proto::Msg, BoxRes};
-use std::path::PathBuf;
+use std::io::prelude::*;
+use std::{fs, net::SocketAddr, path::PathBuf, str::FromStr};
 use tokio::net::TcpStream;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Debug)]
+struct Args {
+    remote: SocketAddr,
+    src: PathBuf,
+    dst: PathBuf,
+    conf_dir: PathBuf,
+    kind: TransferKind,
+}
+
+#[derive(Debug)]
+enum TransferKind {
+    Send,
+    Get,
+}
 
 #[tokio::main]
 async fn main() -> BoxRes<()> {
@@ -11,18 +28,122 @@ async fn main() -> BoxRes<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let stream = TcpStream::connect("127.0.0.1:8080").await?;
-    let key = AsymKey::new(SecretKey::random(thread_rng()));
+    let mut args = parse_args()?;
 
-    let mut client = Client::encrypted(&key, stream).await?;
+    args.conf_dir.push("key.priv");
+    let sk_str = fs::read_to_string(&args.conf_dir)?;
+    args.conf_dir.pop();
+
+    let stream = TcpStream::connect(args.remote).await?;
+
+    let sk = SecretKey::from_sec1_pem(&sk_str)?;
+    let key = AsymKey::new(sk);
+
+    let auth = load_auth(&mut args.conf_dir).await?;
+
+    let client = Client::encrypted(&key, auth, stream).await?;
+
+    match args.kind {
+        TransferKind::Send => send(client, args).await?,
+        _ => todo!(),
+    }
+
+    Ok(())
+}
+
+async fn send<T>(mut client: Client<T>, args: Args) -> BoxRes<()>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+{
+    let mut file = fs::File::open(args.src)?;
 
     let res = client
-        .request(Msg::RequestFile {
-            path: PathBuf::from("/from/client"),
+        .request(Msg::NewFile {
+            path: args.dst.clone(),
+            len: file.metadata()?.len() as usize,
         })
         .await?;
 
-    dbg!(res);
+    match res {
+        Msg::Status(StatusKind::Ready) => (),
+        _ => Err("sending file failed")?,
+    }
+
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+
+        client
+            .request(Msg::SendFilePart {
+                path: args.dst.clone(),
+                data: buf[..n].into(),
+            })
+            .await?;
+    }
 
     Ok(())
+}
+
+fn parse_args() -> Result<Args, lexopt::Error> {
+    use lexopt::prelude::*;
+
+    let mut src = None;
+    let mut dst = None;
+    let mut conf_dir = None;
+    let mut parser = lexopt::Parser::from_env();
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Value(val) => {
+                if src.is_none() {
+                    src = Some(val.string()?);
+                } else if dst.is_none() {
+                    dst = Some(val.string()?);
+                } else {
+                    Err("unexpected SRC/DST")?;
+                }
+            }
+            Short('c') | Long("conf-dir") => {
+                conf_dir = Some(parser.value()?.parse()?);
+            }
+            Long("help") => {
+                println!("Usage: ftclient -c|--conf-dir=CONF_DIR [REMOTE]:SRC [REMOTE]:DST");
+                std::process::exit(0);
+            }
+            _ => return Err(arg.unexpected()),
+        }
+    }
+
+    let src = src.ok_or("SOURCE must be provided")?;
+    let dst = dst.ok_or("DESTINATION must be provided")?;
+
+    let (src, r1) = parse_remote(&src)?;
+    let (dst, r2) = parse_remote(&dst)?;
+
+    let (remote, kind) = match (r1, r2) {
+        (Some(_), Some(_)) => Err("duplicate REMOTE")?,
+        (Some(r), None) => (r, TransferKind::Get),
+        (None, Some(r)) => (r, TransferKind::Send),
+        _ => Err("missing REMOTE")?,
+    };
+
+    Ok(Args {
+        remote,
+        src,
+        dst,
+        conf_dir: conf_dir.ok_or("missing CONF_DIR")?,
+        kind,
+    })
+}
+
+fn parse_remote(path: &str) -> Result<(PathBuf, Option<SocketAddr>), lexopt::Error> {
+    match path.rsplit_once(':') {
+        Some((r, p)) => Ok((
+            PathBuf::from(p),
+            Some(SocketAddr::from_str(r).map_err(|_| "invalid REMOTE")?),
+        )),
+        None => Ok((PathBuf::from(path), None)),
+    }
 }

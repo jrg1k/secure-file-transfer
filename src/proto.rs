@@ -6,6 +6,19 @@ use tracing::debug;
 
 pub type Transport<T> = Framed<T, Codec>;
 
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Msg {
+    NewFile { path: PathBuf, len: usize },
+    Status(StatusKind),
+    SendFilePart { path: PathBuf, data: Vec<u8> },
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum StatusKind {
+    Ready,
+    FileError,
+}
+
 pub struct Codec;
 
 impl Decoder for Codec {
@@ -51,11 +64,6 @@ impl Encoder<Msg> for Codec {
 
         Ok(())
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum Msg {
-    RequestFile { path: PathBuf },
 }
 
 /// Error used for the crypto module.
