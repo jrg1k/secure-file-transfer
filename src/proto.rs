@@ -8,14 +8,17 @@ pub type Transport<T> = Framed<T, Codec>;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Msg {
-    NewFile { path: PathBuf, len: usize },
+    NewSendFile { path: PathBuf },
+    NewGetFile { path: PathBuf },
+    FilePart { path: PathBuf, data: Vec<u8> },
+    GetFilePart { path: PathBuf },
+    FileEnd { path: PathBuf },
     Status(StatusKind),
-    SendFilePart { path: PathBuf, data: Vec<u8> },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum StatusKind {
-    Ready,
+    OK,
     FileError,
 }
 
@@ -52,7 +55,7 @@ impl Encoder<Msg> for Codec {
     type Error = Error;
 
     fn encode(&mut self, item: Msg, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; 4096];
 
         let msg = postcard::to_slice(&item, &mut buf).map_err(Error::SerializeFailure)?;
 

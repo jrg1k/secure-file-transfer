@@ -2,8 +2,9 @@ use p384::SecretKey;
 use secure_file_transfer::auth::load_auth;
 use secure_file_transfer::proto::StatusKind;
 use secure_file_transfer::{client::Client, crypto::AsymKey, proto::Msg, BoxRes};
-use std::io::prelude::*;
-use std::{fs, net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing_subscriber::EnvFilter;
 
@@ -31,7 +32,7 @@ async fn main() -> BoxRes<()> {
     let mut args = parse_args()?;
 
     args.conf_dir.push("key.priv");
-    let sk_str = fs::read_to_string(&args.conf_dir)?;
+    let sk_str = fs::read_to_string(&args.conf_dir).await?;
     args.conf_dir.pop();
 
     let stream = TcpStream::connect(args.remote).await?;
@@ -45,7 +46,42 @@ async fn main() -> BoxRes<()> {
 
     match args.kind {
         TransferKind::Send => send(client, args).await?,
-        _ => todo!(),
+        TransferKind::Get => get(client, args).await?,
+    }
+
+    Ok(())
+}
+
+async fn get<T>(mut client: Client<T>, args: Args) -> BoxRes<()>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
+{
+    let mut file = fs::File::create(args.dst).await?;
+
+    let res = client
+        .request(Msg::NewGetFile {
+            path: args.src.clone(),
+        })
+        .await?;
+
+    match res {
+        Msg::Status(StatusKind::OK) => (),
+        _ => Err("getting file failed")?,
+    }
+
+    loop {
+        let resp = client
+            .request(Msg::GetFilePart {
+                path: args.src.clone(),
+            })
+            .await?;
+        if let Msg::FileEnd { path: _ } = resp {
+            break;
+        }
+
+        if let Msg::FilePart { path: _, data } = resp {
+            file.write_all(&data).await?;
+        }
     }
 
     Ok(())
@@ -55,34 +91,35 @@ async fn send<T>(mut client: Client<T>, args: Args) -> BoxRes<()>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + 'static,
 {
-    let mut file = fs::File::open(args.src)?;
+    let mut file = fs::File::open(args.src).await?;
 
     let res = client
-        .request(Msg::NewFile {
+        .request(Msg::NewSendFile {
             path: args.dst.clone(),
-            len: file.metadata()?.len() as usize,
         })
         .await?;
 
     match res {
-        Msg::Status(StatusKind::Ready) => (),
+        Msg::Status(StatusKind::OK) => (),
         _ => Err("sending file failed")?,
     }
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 256];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buf).await?;
         if n == 0 {
             break;
         }
+        dbg!(n);
 
         client
-            .request(Msg::SendFilePart {
+            .request(Msg::FilePart {
                 path: args.dst.clone(),
                 data: buf[..n].into(),
             })
             .await?;
     }
+    client.request(Msg::FileEnd { path: args.dst }).await?;
 
     Ok(())
 }

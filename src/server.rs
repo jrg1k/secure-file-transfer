@@ -1,27 +1,28 @@
-use crate::proto::Transport;
+use crate::proto::{StatusKind, Transport};
 use crate::{
     crypto,
     crypto::{AsymKey, CryptoStream},
     proto,
     proto::Msg,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::{
     fmt::Formatter,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::net::TcpStream;
+use tokio::{fs::File, io::AsyncReadExt, io::AsyncWriteExt, net::TcpStream, sync::Mutex};
 use tokio_tower::pipeline;
 use tokio_util::codec::Decoder;
 use tower::Service;
-use tracing::debug;
 
 /// serve the client over a plaintext transport
 pub async fn serve_plain(stream: TcpStream) -> Result<(), Error> {
     let transport = proto::Codec.framed(stream);
-    pipeline::Server::new(transport, ServerSvc).await?;
+    pipeline::Server::new(transport, ServerSvc::new()).await?;
     Ok(())
 }
 
@@ -33,11 +34,21 @@ pub async fn serve_encrypted(
 ) -> Result<(), Error> {
     let stream = CryptoStream::new(key, auth, stream).await?;
     let transport = proto::Codec.framed(stream);
-    pipeline::Server::new(transport, ServerSvc).await?;
+    pipeline::Server::new(transport, ServerSvc::new()).await?;
     Ok(())
 }
 
-pub struct ServerSvc;
+pub struct ServerSvc {
+    files: Arc<Mutex<HashMap<PathBuf, File>>>,
+}
+
+impl ServerSvc {
+    fn new() -> Self {
+        Self {
+            files: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
 
 impl Service<Msg> for ServerSvc {
     type Response = Msg;
@@ -49,9 +60,64 @@ impl Service<Msg> for ServerSvc {
     }
 
     fn call(&mut self, req: Msg) -> Self::Future {
+        let files = Arc::clone(&self.files);
         let fut = async move {
-            debug!("{req:#?}");
-            Ok(req)
+            let mut files = files.lock().await;
+            match req {
+                Msg::NewSendFile { path } => {
+                    let file = match File::create(&path).await {
+                        Ok(f) => f,
+                        Err(_) => return Ok(Msg::Status(StatusKind::FileError)),
+                    };
+                    files.insert(path, file);
+                    Ok(Msg::Status(StatusKind::OK))
+                }
+                Msg::NewGetFile { path } => {
+                    let file = match File::open(&path).await {
+                        Ok(f) => f,
+                        Err(_) => return Ok(Msg::Status(StatusKind::FileError)),
+                    };
+                    files.insert(path, file);
+                    Ok(Msg::Status(StatusKind::OK))
+                }
+                Msg::FileEnd { path } => {
+                    files.remove(&path);
+                    Ok(Msg::Status(StatusKind::OK))
+                }
+                Msg::FilePart { path, data } => {
+                    let file = match files.get_mut(&path) {
+                        Some(f) => f,
+                        None => return Ok(Msg::Status(StatusKind::FileError)),
+                    };
+
+                    match file.write_all(&data).await {
+                        Ok(_) => Ok(Msg::Status(StatusKind::OK)),
+                        Err(_) => Ok(Msg::Status(StatusKind::FileError)),
+                    }
+                }
+                Msg::GetFilePart { path } => {
+                    let file = match files.get_mut(&path) {
+                        Some(f) => f,
+                        None => return Ok(Msg::Status(StatusKind::FileError)),
+                    };
+
+                    let mut buf = [0u8; 4096];
+                    let n = match file.read(&mut buf).await {
+                        Ok(n) => n,
+                        Err(_) => return Ok(Msg::Status(StatusKind::FileError)),
+                    };
+
+                    if n == 0 {
+                        return Ok(Msg::FileEnd { path });
+                    }
+
+                    Ok(Msg::FilePart {
+                        path,
+                        data: buf[..n].into(),
+                    })
+                }
+                _ => todo!(),
+            }
         };
         Box::pin(fut)
     }

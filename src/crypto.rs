@@ -235,6 +235,8 @@ impl AsyncRead for CryptoStream {
         length_buf.copy_from_slice(&this.readbuf[..4]);
         let length = u32::from_le_bytes(length_buf) as usize;
 
+        this.readbuf.reserve(length + 4);
+
         if length > MSG_MAX_SIZE {
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -289,6 +291,8 @@ impl AsyncWrite for CryptoStream {
 
         let length = buf.len() + TAG_SIZE;
         let length_buf: [u8; 4] = u32::to_le_bytes(length as u32);
+
+        this.writebuf.reserve(length + 4);
 
         let ciphertext = this
             .encryptor
