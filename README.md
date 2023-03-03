@@ -1,4 +1,4 @@
-# Overengineered trash
+# Server/client authenticated and encrypted file transfer 
 
 # Build and run
 
